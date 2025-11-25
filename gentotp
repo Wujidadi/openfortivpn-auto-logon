@@ -1,0 +1,89 @@
+#!/usr/bin/env node
+
+// Libraries
+const crypto = require('crypto-js');
+
+const hex2dec = (s) => parseInt(s, 16);
+
+const base32toHex = (base32) => {
+  const base32chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+  let bits = '';
+  let hex = '';
+  for (let i = 0; i < base32.length; i++) {
+    const val = base32chars.indexOf(base32.charAt(i).toUpperCase());
+    bits += val.toString(2).padStart(5, '0');
+  }
+  for (let i = 0; i + 4 <= bits.length; i += 4) {
+    const chunk = bits.slice(i, i + 4);
+    hex += parseInt(chunk, 2).toString(16);
+  }
+  return hex;
+};
+
+const generateTOTP = (secret, timeStep = 30, digits = 6) => {
+  const epoch = Math.floor(Date.now() / 1000);
+  const time = Math.floor(epoch / timeStep)
+    .toString(16)
+    .padStart(16, '0');
+  const key = base32toHex(secret);
+  const hmac = crypto
+    .HmacSHA1(crypto.enc.Hex.parse(time), crypto.enc.Hex.parse(key))
+    .toString();
+  const offset = hex2dec(hmac.toString().slice(-1));
+  const otp = (hex2dec(hmac.slice(offset * 2, offset * 2 + 8)) & 0x7fffffff)
+    .toString()
+    .slice(-digits);
+  return otp.padStart(digits, '0');
+};
+
+// Parse command line arguments
+const args = process.argv.slice(2);
+const params = {};
+
+for (let i = 0; i < args.length; i++) {
+  if (args[i].startsWith('--')) {
+    const key = args[i].slice(2);
+    const value = args[i + 1];
+    params[key] = value;
+    i++;
+  } else if (args[i].startsWith('-')) {
+    const key = args[i].slice(1);
+    const value = args[i + 1];
+    params[key] = value;
+    i++;
+  }
+}
+
+// Get parameters
+const secret = params.secret || params.s;
+const timeStep = parseInt(params['time-step'] || params.t || '30');
+const digits = parseInt(params.digits || params.d || '6');
+
+// Validate required parameters
+if (!secret) {
+  console.error('Error: The secret parameter is required.');
+  console.error('');
+  console.error('Usage:');
+  console.error('  node gen.js --secret <SECRET> [--time-step <STEP>] [--digits <DIGITS>]');
+  console.error('  node gen.js -s <SECRET> [-t <STEP>] [-d <DIGITS>]');
+  console.error('');
+  console.error('Parameters:');
+  console.error('  --secret, -s    TOTP secret (required)');
+  console.error('  --time-step, -t Time step, default is 30 seconds');
+  console.error('  --digits, -d    Number of OTP digits, default is 6');
+  console.error('');
+  console.error('Examples:');
+  console.error('  node gen.js --secret JBSWY3DPEHPK3PXP');
+  console.error('  node gen.js -s JBSWY3DPEHPK3PXP -t 30 -d 6');
+  process.exit(1);
+}
+
+// Generate and output TOTP
+try {
+  const totp = generateTOTP(secret, timeStep, digits);
+  console.log(totp);
+} catch (error) {
+  console.error('Error: Failed to generate TOTP');
+  console.error(error.message);
+  process.exit(1);
+}

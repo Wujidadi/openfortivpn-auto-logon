@@ -1,0 +1,35 @@
+#!/usr/bin/env expect
+
+set script_dir [file dirname [file normalize [info script]]]
+
+set env_file "$script_dir/.env"
+set fp [open $env_file r]
+set file_data [read $fp]
+close $fp
+
+foreach line [split $file_data "\n"] {
+  if {[regexp {^([^=]+)=(.+)$} $line -> key value]} {
+    set env($key) $value
+  }
+}
+
+set vpn_ip $env(VPN_IP)
+set vpn_port $env(VPN_PORT)
+set username $env(VPN_USERNAME)
+set password $env(VPN_PASSWORD)
+set trusted_cert $env(VPN_TRUSTED_CERT)
+set totp_secret $env(TOTP_SECRET)
+
+set totp [exec $script_dir/gentotp -s $totp_secret]
+set full_password "${password}${totp}"
+
+spawn sudo openfortivpn ${vpn_ip}:${vpn_port} -u $username --trusted-cert $trusted_cert
+expect {
+  "*assword:" {
+    send "$full_password\r"
+    exp_continue
+  }
+}
+
+interact
+exit 0
