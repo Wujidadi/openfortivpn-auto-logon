@@ -20,16 +20,84 @@ set password $env(VPN_PASSWORD)
 set trusted_cert $env(VPN_TRUSTED_CERT)
 set totp_secret $env(TOTP_SECRET)
 
-set totp [exec $script_dir/gentotp -s $totp_secret]
-set full_password "${password}${totp}"
+set max_retries 3
+set retry_delay 5
+set login_timeout 60
 
-spawn sudo openfortivpn ${vpn_ip}:${vpn_port} -u $username --trusted-cert $trusted_cert
-expect {
-  "*assword:" {
-    send "$full_password\r"
-    exp_continue
+set retries 0
+set first_attempt 1
+set last_totp_window -1
+set user_quit 0
+set active 0
+
+# Outside interact the terminal is cooked, so Ctrl+C arrives as SIGINT
+trap {
+  set user_quit 1
+  if {$active} {
+    catch {send "\003"}
+  } else {
+    exit 130
+  }
+} SIGINT
+
+while {1} {
+  if {!$first_attempt} {
+    incr retries
+    if {$retries > $max_retries} {
+      send_user "\nGave up after $max_retries failed reconnect attempts.\n"
+      exit 1
+    }
+    send_user "\nReconnecting in $retry_delay seconds ($retries/$max_retries)...\n"
+    sleep $retry_delay
+  }
+  set first_attempt 0
+
+  # The gateway rejects a TOTP code that has already been used
+  if {[clock seconds] / 30 == $last_totp_window} {
+    set wait_secs [expr {30 - [clock seconds] % 30 + 1}]
+    send_user "Waiting $wait_secs seconds for a fresh TOTP code...\n"
+    sleep $wait_secs
+  }
+  set last_totp_window [expr {[clock seconds] / 30}]
+  set totp [exec $script_dir/gentotp -s $totp_secret]
+  set full_password "${password}${totp}"
+
+  spawn sudo openfortivpn ${vpn_ip}:${vpn_port} -u $username --trusted-cert $trusted_cert
+  set active 1
+  set connected 0
+  set timeout $login_timeout
+  expect {
+    "*assword:" {
+      send "$full_password\r"
+      exp_continue
+    }
+    "Tunnel is up and running." {
+      set connected 1
+    }
+    timeout {
+      send_user "\nNo tunnel within $login_timeout seconds.\n"
+      catch {send "\003"}
+      expect -timeout 10 eof
+    }
+    eof
+  }
+
+  if {$connected && !$user_quit} {
+    set retries 0
+    # In interact the terminal is raw, so Ctrl+C arrives as a keystroke instead of SIGINT
+    interact {
+      \003 {
+        set user_quit 1
+        send "\003"
+      }
+    }
+  }
+
+  catch {close}
+  catch {wait}
+  set active 0
+
+  if {$user_quit} {
+    exit 0
   }
 }
-
-interact
-exit 0

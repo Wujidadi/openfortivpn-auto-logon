@@ -13,3 +13,9 @@
      alias connect-vpn='path/to/your/script/connect-vpn'
      ```
    - After sourcing the rc file, you can run it from anywhere using `connect-vpn`.
+
+## Auto Reconnect
+
+- When the tunnel drops, `connect-vpn` logs in again with a fresh TOTP code.
+- It gives up after 3 consecutive failed reconnect attempts; a successful connection resets the count.
+- Press `Ctrl+C` to log out and quit.
