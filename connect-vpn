@@ -20,9 +20,170 @@ set password $env(VPN_PASSWORD)
 set trusted_cert $env(VPN_TRUSTED_CERT)
 set totp_secret $env(TOTP_SECRET)
 
+if {[info exists env(LOG_DIR)]} {
+  set log_dir $env(LOG_DIR)
+} elseif {$tcl_platform(os) eq "Darwin"} {
+  set log_dir "$env(HOME)/Library/Logs/openfortivpn-auto-logon"
+} else {
+  set log_dir "$env(HOME)/.local/state/openfortivpn-auto-logon"
+}
+if {[info exists env(LOG_RETENTION_DAYS)]} {
+  set log_retention_days $env(LOG_RETENTION_DAYS)
+} else {
+  set log_retention_days 14
+}
+set log_path "$log_dir/connect-vpn.log"
+set pid_file "$log_dir/connect-vpn.pid"
+
 set max_retries 3
 set retry_delay 5
 set login_timeout 60
+
+proc usage {} {
+  return "Usage: connect-vpn \[-b|--background | --stop | --status | --log\]
+
+  (no option)       Connect in the foreground; Ctrl+C logs out and quits
+  -b, --background  Connect in the background, detached from the terminal
+  --stop            Log out and stop the running instance
+  --status          Show whether an instance is running
+  --log             Follow the log file"
+}
+
+proc timestamp {} {
+  set ts [clock format [clock seconds] -format {%Y-%m-%dT%H:%M:%S%z}]
+  regsub {(\d\d)$} $ts {:\1} ts
+  return $ts
+}
+
+proc stamp {{leading_blank 0}} {
+  if {$leading_blank} {
+    send_user "\n"
+  }
+  send_user "\[[timestamp]\]\n"
+}
+
+proc running_pid {} {
+  global pid_file
+  if {[catch {
+    set fp [open $pid_file r]
+    set pid [string trim [read $fp]]
+    close $fp
+  }]} {
+    return ""
+  }
+  if {[catch {exec ps -p $pid -o command=} command] || ![string match "*connect-vpn*" $command]} {
+    return ""
+  }
+  return $pid
+}
+
+# Archives the log by date and prunes expired archives, so tail -F on connect-vpn.log keeps working
+proc rotate_log {} {
+  global log_dir log_path log_date log_retention_days
+  set today [clock format [clock seconds] -format %Y-%m-%d]
+  if {[info exists log_date] && $log_date eq $today} {
+    return
+  }
+  log_file
+  if {[file exists $log_path]} {
+    set file_date [clock format [file mtime $log_path] -format %Y-%m-%d]
+    if {$file_date ne $today} {
+      file rename -force $log_path "$log_dir/connect-vpn.$file_date.log"
+    }
+  }
+  log_file -a $log_path
+  set log_date $today
+  foreach archive [glob -nocomplain -directory $log_dir connect-vpn.*.log] {
+    if {[clock seconds] - [file mtime $archive] > $log_retention_days * 86400} {
+      file delete $archive
+    }
+  }
+}
+
+set mode foreground
+switch -- [lindex $argv 0] {
+  "" {}
+  -b - --background { set mode background }
+  --stop { set mode stop }
+  --status { set mode status }
+  --log { set mode log }
+  --daemon { set mode daemon }
+  -h - --help {
+    puts [usage]
+    exit 0
+  }
+  default {
+    puts stderr [usage]
+    exit 2
+  }
+}
+
+file mkdir $log_dir
+set pid [running_pid]
+
+switch -- $mode {
+  status {
+    if {$pid eq ""} {
+      puts "Not running."
+      exit 1
+    }
+    puts "Running (PID $pid). Log: $log_path"
+    exit 0
+  }
+  stop {
+    if {$pid eq ""} {
+      puts "Not running."
+      exit 1
+    }
+    exec kill -TERM $pid
+    for {set i 0} {$i < 30} {incr i} {
+      if {[running_pid] eq ""} {
+        puts "Stopped."
+        exit 0
+      }
+      sleep 1
+    }
+    puts stderr "PID $pid is still running after 30 seconds."
+    exit 1
+  }
+  log {
+    if {![file exists $log_path]} {
+      puts stderr "No log yet: $log_path"
+      exit 1
+    }
+    exec tail -n 100 -F $log_path >@ stdout 2>@ stderr
+    exit 0
+  }
+}
+
+if {$pid ne ""} {
+  puts stderr "Already running (PID $pid). Use --stop first."
+  exit 1
+}
+
+# Tcl's notifier does not survive fork on macOS, so detach by re-running this script under nohup
+if {$mode eq "background"} {
+  exec nohup [info nameofexecutable] [file normalize [info script]] --daemon < /dev/null >& /dev/null &
+  for {set i 0} {$i < 10} {incr i} {
+    sleep 0.5
+    set pid [running_pid]
+    if {$pid ne ""} {
+      puts "Started in the background (PID $pid). Log: $log_path"
+      exit 0
+    }
+  }
+  puts stderr "Failed to start in the background. Log: $log_path"
+  exit 1
+}
+
+set fp [open $pid_file w]
+puts $fp [pid]
+close $fp
+exit -onexit {
+  if {[running_pid] eq [pid]} {
+    file delete $pid_file
+  }
+}
 
 set retries 0
 set first_attempt 1
@@ -30,24 +191,34 @@ set last_totp_window -1
 set user_quit 0
 set active 0
 
-# Outside interact the terminal is cooked, so Ctrl+C arrives as SIGINT
 trap {
-  set user_quit 1
+  if {!$user_quit} {
+    set user_quit 1
+    stamp 1
+    send_user "Received SIG[trap -name], logging out...\n"
+  }
   if {$active} {
     catch {send "\003"}
   } else {
     exit 130
   }
-} SIGINT
+} {SIGINT SIGTERM SIGHUP}
+if {$mode eq "daemon"} {
+  trap SIG_IGN SIGHUP
+}
 
 while {1} {
-  if {!$first_attempt} {
+  rotate_log
+  if {$first_attempt} {
+    stamp
+  } else {
     incr retries
+    stamp 1
     if {$retries > $max_retries} {
-      send_user "\nGave up after $max_retries failed reconnect attempts.\n"
+      send_user "Gave up after $max_retries failed reconnect attempts.\n"
       exit 1
     }
-    send_user "\nReconnecting in $retry_delay seconds ($retries/$max_retries)...\n"
+    send_user "Reconnecting in $retry_delay seconds ($retries/$max_retries)...\n"
     sleep $retry_delay
   }
   set first_attempt 0
@@ -84,13 +255,8 @@ while {1} {
 
   if {$connected && !$user_quit} {
     set retries 0
-    # In interact the terminal is raw, so Ctrl+C arrives as a keystroke instead of SIGINT
-    interact {
-      \003 {
-        set user_quit 1
-        send "\003"
-      }
-    }
+    set timeout -1
+    expect eof
   }
 
   catch {close}
@@ -98,6 +264,8 @@ while {1} {
   set active 0
 
   if {$user_quit} {
+    stamp 1
+    send_user "Stopped.\n"
     exit 0
   }
 }
