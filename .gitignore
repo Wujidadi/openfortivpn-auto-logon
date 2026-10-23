@@ -78,7 +78,6 @@ pnpm-lock.yaml
 
 # Environment Variables
 .env
-bypass-routes.txt
 .env.local
 .env.development.local
 .env.test.local
@@ -102,3 +101,6 @@ coverage/
 *.swo
 *.bak
 *.cache
+
+# Bypass Routes
+bypass-routes.txt
