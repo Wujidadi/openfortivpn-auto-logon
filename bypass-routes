@@ -1,0 +1,52 @@
+#!/bin/sh
+# Routes the hosts listed in bypass-routes.txt through the local gateway instead of the VPN tunnel.
+# Usage: sudo bypass-routes <vpn_ip>
+
+script_dir=$(cd "$(dirname "$0")" && pwd)
+list="$script_dir/bypass-routes.txt"
+vpn_ip=$1
+
+if [ -z "$vpn_ip" ]; then
+  echo "Usage: bypass-routes <vpn_ip>" >&2
+  exit 2
+fi
+if [ ! -f "$list" ]; then
+  echo "No bypass list at $list, skipped."
+  exit 0
+fi
+
+# openfortivpn pins the VPN gateway to the local gateway, so that route reveals it on any network
+gateway=$(route -n get "$vpn_ip" 2>/dev/null | awk '/gateway:/ {print $2}')
+if [ -z "$gateway" ]; then
+  echo "Cannot find the local gateway to $vpn_ip." >&2
+  exit 1
+fi
+
+add_route() {
+  kind=$1
+  target=$2
+  route -n delete "-$kind" "$target" >/dev/null 2>&1
+  if route -n add "-$kind" "$target" "$gateway" >/dev/null 2>&1; then
+    echo "Bypass $target via $gateway"
+  else
+    echo "Failed to bypass $target" >&2
+  fi
+}
+
+sed -e 's/#.*//' -e 's/[[:space:]]//g' "$list" | while read -r entry; do
+  [ -z "$entry" ] && continue
+  case $entry in
+    *[!0-9./]*)
+      ips=$(dig +short "$entry" A | grep -E '^[0-9.]+$')
+      if [ -z "$ips" ]; then
+        echo "Cannot resolve $entry" >&2
+        continue
+      fi
+      for ip in $ips; do
+        add_route host "$ip"
+      done
+      ;;
+    */*) add_route net "$entry" ;;
+    *) add_route host "$entry" ;;
+  esac
+done

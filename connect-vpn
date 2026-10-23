@@ -244,6 +244,8 @@ while {1} {
     }
     "Tunnel is up and running." {
       set connected 1
+      catch {exec sudo -n $script_dir/bypass-routes $vpn_ip 2>@1} bypass_output
+      send_user "$bypass_output\n"
     }
     timeout {
       send_user "\nNo tunnel within $login_timeout seconds.\n"

@@ -1,0 +1,5 @@
+# One entry per line: an IPv4 address, a CIDR range, or a domain name (resolved to IPv4 at connect time)
+# Copy to bypass-routes.txt and edit; entries there skip the VPN tunnel
+
+# PTT WebSocket (ws.ptt.cc) rejects overseas source addresses
+140.112.172.0/24
