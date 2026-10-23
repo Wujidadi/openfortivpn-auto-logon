@@ -1,16 +1,19 @@
 #!/bin/sh
 # Routes the hosts listed in bypass-routes.txt through the local gateway instead of the VPN tunnel.
+# Routes added by a previous run but no longer listed are removed.
 # Usage: sudo bypass-routes <vpn_ip>
 
 script_dir=$(cd "$(dirname "$0")" && pwd)
 list="$script_dir/bypass-routes.txt"
+# Under /var/run so the record is cleared on reboot, together with the routes it describes
+state=/var/run/bypass-routes.applied
 vpn_ip=$1
 
 if [ -z "$vpn_ip" ]; then
   echo "Usage: bypass-routes <vpn_ip>" >&2
   exit 2
 fi
-if [ ! -f "$list" ]; then
+if [ ! -f "$list" ] && [ ! -f "$state" ]; then
   echo "No bypass list at $list, skipped."
   exit 0
 fi
@@ -22,31 +25,45 @@ if [ -z "$gateway" ]; then
   exit 1
 fi
 
-add_route() {
-  kind=$1
-  target=$2
+desired=$(mktemp)
+trap 'rm -f "$desired" "$state.new"' EXIT
+
+if [ -f "$list" ]; then
+  sed -e 's/#.*//' -e 's/[[:space:]]//g' "$list" | while read -r entry; do
+    [ -z "$entry" ] && continue
+    case $entry in
+      *[!0-9./]*)
+        ips=$(dig +short "$entry" A | grep -E '^[0-9.]+$')
+        if [ -z "$ips" ]; then
+          echo "Cannot resolve $entry" >&2
+          continue
+        fi
+        for ip in $ips; do
+          echo "host $ip"
+        done
+        ;;
+      */*) echo "net $entry" ;;
+      *) echo "host $entry" ;;
+    esac
+  done | sort -u > "$desired"
+fi
+
+if [ -f "$state" ]; then
+  grep -vxF -f "$desired" "$state" | while read -r kind target; do
+    if route -n delete "-$kind" "$target" >/dev/null 2>&1; then
+      echo "Removed bypass $target"
+    fi
+  done
+fi
+
+: > "$state.new"
+while read -r kind target; do
   route -n delete "-$kind" "$target" >/dev/null 2>&1
   if route -n add "-$kind" "$target" "$gateway" >/dev/null 2>&1; then
     echo "Bypass $target via $gateway"
+    echo "$kind $target" >> "$state.new"
   else
     echo "Failed to bypass $target" >&2
   fi
-}
-
-sed -e 's/#.*//' -e 's/[[:space:]]//g' "$list" | while read -r entry; do
-  [ -z "$entry" ] && continue
-  case $entry in
-    *[!0-9./]*)
-      ips=$(dig +short "$entry" A | grep -E '^[0-9.]+$')
-      if [ -z "$ips" ]; then
-        echo "Cannot resolve $entry" >&2
-        continue
-      fi
-      for ip in $ips; do
-        add_route host "$ip"
-      done
-      ;;
-    */*) add_route net "$entry" ;;
-    *) add_route host "$entry" ;;
-  esac
-done
+done < "$desired"
+mv "$state.new" "$state"
