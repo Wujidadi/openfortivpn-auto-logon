@@ -2,6 +2,7 @@
 # Routes the hosts listed in bypass-routes.txt through the local gateway instead of the VPN tunnel.
 # Routes added by a previous run but no longer listed are removed.
 # Usage: sudo bypass-routes <vpn_ip>
+#        sudo bypass-routes --clear
 
 script_dir=$(cd "$(dirname "$0")" && pwd)
 list="$script_dir/bypass-routes.txt"
@@ -9,8 +10,19 @@ list="$script_dir/bypass-routes.txt"
 state=/var/run/bypass-routes.applied
 vpn_ip=$1
 
+if [ "$vpn_ip" = "--clear" ]; then
+  if [ -f "$state" ]; then
+    while read -r kind target; do
+      if route -n delete "-$kind" "$target" >/dev/null 2>&1; then
+        echo "Removed bypass $target"
+      fi
+    done < "$state"
+    rm -f "$state"
+  fi
+  exit 0
+fi
 if [ -z "$vpn_ip" ]; then
-  echo "Usage: bypass-routes <vpn_ip>" >&2
+  echo "Usage: bypass-routes <vpn_ip> | --clear" >&2
   exit 2
 fi
 if [ ! -f "$list" ] && [ ! -f "$state" ]; then

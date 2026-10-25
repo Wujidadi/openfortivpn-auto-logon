@@ -265,6 +265,12 @@ while {1} {
   catch {wait}
   set active 0
 
+  # The routes pin the gateway of the network at connect time and break once the network changes
+  catch {exec sudo -n $script_dir/bypass-routes --clear 2>@1} bypass_output
+  if {$bypass_output ne ""} {
+    send_user "$bypass_output\n"
+  }
+
   if {$user_quit} {
     stamp 1
     send_user "Stopped.\n"

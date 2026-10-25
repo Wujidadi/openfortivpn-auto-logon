@@ -38,7 +38,9 @@ Only one instance runs at a time.
 - The VPN takes over all IPv4 traffic, and some sites reject its exit address.
 - Hosts listed in `bypass-routes.txt` skip the tunnel and go through the local gateway: `cp bypass-routes.example bypass-routes.txt`, then add one IPv4 address, CIDR range, or domain name per line.
 - `connect-vpn` applies the list each time the tunnel comes up; domain names are resolved to IPv4 at that moment.
+- `connect-vpn` removes the applied routes each time the tunnel goes down, since they point at the gateway of the network in use at connect time.
 - To apply an edited list without reconnecting, run `sudo ./bypass-routes <VPN_IP>`.
+- To remove leftover routes after an abnormal exit, run `sudo ./bypass-routes --clear`.
 - Applied routes are recorded in `/var/run/bypass-routes.applied`; entries later commented out or deleted from the list are removed on the next run.
 - Requires passwordless `sudo`; otherwise the step is skipped and the error is logged.
 
