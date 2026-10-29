@@ -42,6 +42,7 @@ Only one instance runs at a time.
 - To apply an edited list without reconnecting, run `sudo ./bypass-routes <VPN_IP>`.
 - To remove leftover routes after an abnormal exit, run `sudo ./bypass-routes --clear`.
 - Applied routes are recorded in `/var/run/bypass-routes.applied`; entries later commented out or deleted from the list are removed on the next run.
+- The same step adds a scoped default route on the physical interface when none exists, so interface-bound clients such as Tailscale keep working while the tunnel holds the main default route; the added route is recorded in `/var/run/bypass-routes.scoped-default` and removed with the others.
 - Requires passwordless `sudo`; otherwise the step is skipped and the error is logged.
 
 ## Logs

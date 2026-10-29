@@ -1,6 +1,8 @@
 #!/bin/sh
 # Routes the hosts listed in bypass-routes.txt through the local gateway instead of the VPN tunnel.
 # Routes added by a previous run but no longer listed are removed.
+# Also ensures the physical interface keeps a scoped default route, which interface-bound sockets
+# such as Tailscale's need once openfortivpn has replaced the default route.
 # Usage: sudo bypass-routes <vpn_ip>
 #        sudo bypass-routes --clear
 
@@ -8,6 +10,7 @@ script_dir=$(cd "$(dirname "$0")" && pwd)
 list="$script_dir/bypass-routes.txt"
 # Under /var/run so the record is cleared on reboot, together with the routes it describes
 state=/var/run/bypass-routes.applied
+scoped_state=/var/run/bypass-routes.scoped-default
 vpn_ip=$1
 
 if [ "$vpn_ip" = "--clear" ]; then
@@ -19,22 +22,42 @@ if [ "$vpn_ip" = "--clear" ]; then
     done < "$state"
     rm -f "$state"
   fi
+  if [ -f "$scoped_state" ]; then
+    read -r iface gateway < "$scoped_state"
+    if route -n delete -ifscope "$iface" default "$gateway" >/dev/null 2>&1; then
+      echo "Removed scoped default on $iface"
+    fi
+    rm -f "$scoped_state"
+  fi
   exit 0
 fi
 if [ -z "$vpn_ip" ]; then
   echo "Usage: bypass-routes <vpn_ip> | --clear" >&2
   exit 2
 fi
+
+# openfortivpn pins the VPN gateway to the local gateway, so that route reveals it on any network
+vpn_route=$(route -n get "$vpn_ip" 2>/dev/null)
+gateway=$(echo "$vpn_route" | awk '/gateway:/ {print $2}')
+iface=$(echo "$vpn_route" | awk '/interface:/ {print $2}')
+if [ -z "$gateway" ] || [ -z "$iface" ]; then
+  echo "Cannot find the local gateway to $vpn_ip." >&2
+  exit 1
+fi
+
+# Only a route added here is recorded, so --clear never touches one that configd manages
+if ! netstat -rn -f inet | awk -v i="$iface" '$1 == "default" && $4 == i && $3 ~ /I/ {f = 1} END {exit !f}'; then
+  if route -n add -ifscope "$iface" default "$gateway" >/dev/null 2>&1; then
+    echo "Scoped default via $gateway on $iface"
+    echo "$iface $gateway" > "$scoped_state"
+  else
+    echo "Failed to add a scoped default on $iface" >&2
+  fi
+fi
+
 if [ ! -f "$list" ] && [ ! -f "$state" ]; then
   echo "No bypass list at $list, skipped."
   exit 0
-fi
-
-# openfortivpn pins the VPN gateway to the local gateway, so that route reveals it on any network
-gateway=$(route -n get "$vpn_ip" 2>/dev/null | awk '/gateway:/ {print $2}')
-if [ -z "$gateway" ]; then
-  echo "Cannot find the local gateway to $vpn_ip." >&2
-  exit 1
 fi
 
 desired=$(mktemp)
